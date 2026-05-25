@@ -1,0 +1,20 @@
+# Source xlsx is huge (1.7 GB) — don't commit, the extracted JSON + images are the deliverable
+诺贝尔-瓷砖高清素材图+实铺效果图.xlsx
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (Mimo key lives in localStorage on the device, not in source)
+.env
+.env.local
+
+# Claude Code local config (preview launch settings, etc)
+.claude/

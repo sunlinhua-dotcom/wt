@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>瓷砖速查</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon.png" />
+<link rel="icon" href="icon.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-row">
+    <h1>瓷砖速查</h1>
+    <button id="btn-settings" class="icon-btn" aria-label="设置">⚙</button>
+  </div>
+  <div class="search-row">
+    <input id="search" type="search" inputmode="search" autocomplete="off"
+           placeholder="搜型号 / 规格 / 分类" />
+    <button id="btn-clear-search" class="icon-btn small" aria-label="清空">✕</button>
+  </div>
+  <div class="filters">
+    <div id="brand-tabs" class="chip-row"></div>
+    <details id="advanced-filters" class="adv">
+      <summary>更多筛选</summary>
+      <div class="filter-grid">
+        <label>规格
+          <select id="filter-spec"><option value="">全部规格</option></select>
+        </label>
+        <label>分类
+          <select id="filter-cat"><option value="">全部分类</option></select>
+        </label>
+        <label class="ck"><input type="checkbox" id="filter-only-images" />只看有图</label>
+        <label class="ck"><input type="checkbox" id="filter-only-picked" />只看已选</label>
+      </div>
+    </details>
+  </div>
+  <div id="status" class="status">加载中…</div>
+</header>
+
+<main id="list" class="list" aria-live="polite"></main>
+
+<div id="sentinel" aria-hidden="true"></div>
+
+<button id="btn-camera" class="fab" aria-label="拍照识别 SKU">
+  <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+    <path fill="currentColor" d="M9 3l-1.83 2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
+  </svg>
+</button>
+
+<input id="file-input" type="file" accept="image/*" capture="environment" hidden />
+
+<dialog id="detail-dialog" class="detail">
+  <button class="close" data-close aria-label="关闭">✕</button>
+  <div id="detail-body"></div>
+</dialog>
+
+<dialog id="recog-dialog" class="recog">
+  <button class="close" data-close aria-label="关闭">✕</button>
+  <div id="recog-body"></div>
+</dialog>
+
+<dialog id="settings-dialog" class="settings">
+  <button class="close" data-close aria-label="关闭">✕</button>
+  <h2>设置</h2>
+  <p class="muted">拍照识别需要 Mimo API key。Key 只存在本设备的浏览器里。</p>
+  <label>Mimo Base URL
+    <input id="setting-base" type="url" placeholder="https://token-plan-cn.xiaomimimo.com/v1" />
+  </label>
+  <label>模型 <small>（omni 是当前 Mimo 唯一靠谱的视觉模型，不要改）</small>
+    <input id="setting-model" type="text" placeholder="mimo-v2-omni" />
+  </label>
+  <label>API Key
+    <input id="setting-key" type="password" placeholder="tp-..." />
+  </label>
+  <div class="settings-actions">
+    <button id="btn-save-settings" class="primary">保存</button>
+    <button id="btn-clear-picked" class="ghost">清空"已选"</button>
+  </div>
+  <p class="muted small">本表收录 <span id="count-total"></span> 个型号；<span id="count-pickable"></span> 来自诺贝尔 sheet（带高清渲染图）。</p>
+</dialog>
+
+<script src="app.js" defer></script>
+</body>
+</html>

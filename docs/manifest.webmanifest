@@ -1,0 +1,12 @@
+{
+  "name": "瓷砖速查",
+  "short_name": "瓷砖速查",
+  "description": "京东直装瓷砖型号速查 + 拍照识别",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#0a84ff",
+  "icons": [
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
