@@ -55,8 +55,8 @@
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bot: env(safe-area-inset-bottom, 0px);
 
-  /* FAB 尺寸 — 至少屏幕高度 1/5 */
-  --fab-size: 158px;
+  /* FAB 尺寸 — 大于标准但不主导画面 */
+  --fab-size: 84px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -126,7 +126,7 @@ html, body {
 }
 body {
   padding-top: calc(var(--safe-top) + var(--topbar-h, 196px));
-  padding-bottom: calc(var(--safe-bot) + var(--fab-size) + 56px);
+  padding-bottom: calc(var(--safe-bot) + var(--fab-size) + 28px);
   min-height: 100vh;
   background:
     radial-gradient(1200px 600px at 50% -200px, var(--bg-deep) 0%, transparent 70%),
@@ -405,9 +405,8 @@ a { color: var(--accent); text-decoration: none; }
 /* === Camera FAB (the hero) ================================================ */
 .fab {
   position: fixed;
-  left: 50%;
-  bottom: calc(var(--safe-bot) + 20px);
-  transform: translateX(-50%);
+  right: 18px;
+  bottom: calc(var(--safe-bot) + 18px);
   width: var(--fab-size);
   height: var(--fab-size);
   border-radius: 50%;
@@ -433,15 +432,20 @@ a { color: var(--accent); text-decoration: none; }
   0%, 100% { opacity: 0.55; transform: scale(1); }
   50%      { opacity: 0; transform: scale(1.18); }
 }
-.fab:active { transform: translateX(-50%) scale(0.94); }
-.fab svg { width: 56px; height: 56px; }
+.fab:active { transform: scale(0.94); }
+.fab svg { width: 30px; height: 30px; }
 .fab .fab-label {
   font-family: var(--font-display);
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  margin-top: 2px;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  margin-top: 1px;
   text-transform: uppercase;
   opacity: 0.92;
+}
+.fab::after { inset: -8px; }
+@keyframes fab-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50%      { opacity: 0; transform: scale(1.22); }
 }
 
 /* === Dialogs (base) ======================================================= */
