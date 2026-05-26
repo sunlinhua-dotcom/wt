@@ -1110,6 +1110,21 @@ async function copyText(text) {
 }
 
 // ---------- Boot ----------
+function consumeServerInjectedConfig() {
+  // Zeabur's container entrypoint can write a config.js that sets
+  // window.WT_CONFIG = { base, model, key }. We treat it as a one-shot
+  // bootstrap: if there's no key in localStorage yet, adopt the server one.
+  // We never overwrite a key the user already saved by hand.
+  const cfg = window.WT_CONFIG;
+  if (!cfg || typeof cfg !== 'object') return;
+  if (!cfg.key || !/^tp-[A-Za-z0-9_-]{8,}$/.test(cfg.key)) return;
+  if (STATE.settings.key) return;  // user already configured manually
+  STATE.settings.key = cfg.key;
+  if (cfg.base && /^https?:\/\//.test(cfg.base)) STATE.settings.base = cfg.base;
+  if (cfg.model && typeof cfg.model === 'string') STATE.settings.model = cfg.model;
+  saveSettings();
+}
+
 function consumeUrlHashConfig() {
   // Support a one-shot bootstrap link of the form `.../#key=tp-xxx`.
   // We DELIBERATELY only accept `key` from the hash — never base/model — so a
@@ -1129,6 +1144,7 @@ function consumeUrlHashConfig() {
 
 async function boot() {
   loadPersisted();
+  consumeServerInjectedConfig();
   consumeUrlHashConfig();
   updatePicksBadge();
   try {

@@ -1,6 +1,8 @@
 FROM nginx:alpine
 
 COPY docs/ /usr/share/nginx/html/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Zeabur expects port 8080 by default; nginx defaults to 80 — override.
 RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf
@@ -21,3 +23,7 @@ EOF
 RUN sed -i 's|index  index.html index.htm;|index  index.html;\n    expires $expires_for_static;|' /etc/nginx/conf.d/default.conf
 
 EXPOSE 8080
+
+# Run our config writer first, then exec nginx in the foreground.
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]

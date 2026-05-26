@@ -101,6 +101,10 @@
   <p class="muted small">本表收录 <span id="count-total"></span> 个型号；<span id="count-pickable"></span> 来自诺贝尔 sheet（带高清渲染图）。</p>
 </dialog>
 
+<!-- Optional runtime config: Zeabur entrypoint.sh writes this with the env-var
+     key so the app auto-populates settings on first launch. Missing on local
+     dev / GitHub Pages, which is fine — the app falls back to manual entry. -->
+<script src="config.js"></script>
 <script src="app.js" defer></script>
 <script>
   if ('serviceWorker' in navigator) {
