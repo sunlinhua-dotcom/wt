@@ -8355,7 +8355,13 @@
       "spec": "750*1500",
       "category": "瓷砖 -> 室内墙地砖 -> 仿古砖",
       "category_short": "仿古砖",
-      "has_images": false
+      "has_images": true,
+      "single": {
+        "thumb": "images/scraped_thumb/GA01715E_763.webp",
+        "full": "images/scraped_full/GA01715E_763.jpg",
+        "source": "bing-jd",
+        "source_url": "https://item.jd.com/10163234288357.html"
+      }
     },
     {
       "id": 764,

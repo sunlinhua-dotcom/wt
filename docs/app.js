@@ -17,6 +17,7 @@ const STATE = {
   onlyPicked: false,
   picked: new Set(),  // tile ids
   notes: {},          // tile id -> string
+  userImages: {},     // tile id -> { thumb: dataUrl, full: dataUrl, ts }
   history: [],        // [{ts, raw, top_id, top_sku, in_lib, photo}]
   settings: { base: 'https://token-plan-cn.xiaomimimo.com/v1', model: 'mimo-v2-omni', key: '' },
 };
@@ -26,6 +27,7 @@ const LS = {
   SETTINGS: 'wt.settings.v1',
   HISTORY: 'wt.history.v1',
   NOTES: 'wt.notes.v1',
+  USERIMG: 'wt.userimg.v1',  // {tile_id: dataUrl} — photos the user attached on-site
 };
 
 const HISTORY_CAP = 20;
@@ -48,6 +50,10 @@ function loadPersisted() {
     const n = JSON.parse(localStorage.getItem(LS.NOTES) || '{}');
     STATE.notes = (n && typeof n === 'object') ? n : {};
   } catch { /* ignore */ }
+  try {
+    const u = JSON.parse(localStorage.getItem(LS.USERIMG) || '{}');
+    STATE.userImages = (u && typeof u === 'object') ? u : {};
+  } catch { /* ignore */ }
 }
 
 function savePicked() {
@@ -61,6 +67,74 @@ function saveHistory() {
 }
 function saveNotes() {
   localStorage.setItem(LS.NOTES, JSON.stringify(STATE.notes));
+}
+function saveUserImages() {
+  try {
+    localStorage.setItem(LS.USERIMG, JSON.stringify(STATE.userImages));
+  } catch (e) {
+    // localStorage quota exceeded — strip oldest entries until we fit.
+    const entries = Object.entries(STATE.userImages)
+      .map(([id, v]) => [id, v, v?.ts || 0])
+      .sort((a, b) => a[2] - b[2]);
+    while (entries.length > 1) {
+      const [id] = entries.shift();
+      delete STATE.userImages[id];
+      try {
+        localStorage.setItem(LS.USERIMG, JSON.stringify(STATE.userImages));
+        toast('用户图储存满了，已删除最早的一张');
+        return;
+      } catch { /* keep going */ }
+    }
+    toast('保存失败，本地空间不足');
+  }
+}
+
+async function makeUserImageVariants(srcDataUrl) {
+  // Produce a tiny thumb (480px webp) and medium full (1024px jpeg) so we can
+  // pack 100+ user photos into localStorage without overflowing the ~5 MB cap.
+  const loadImg = (url) => new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = url;
+  });
+  const im = await loadImg(srcDataUrl);
+  const draw = (maxDim, mime, quality) => {
+    let { width: w, height: h } = im;
+    if (Math.max(w, h) > maxDim) {
+      if (w >= h) { h = Math.round(h * maxDim / w); w = maxDim; }
+      else { w = Math.round(w * maxDim / h); h = maxDim; }
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(im, 0, 0, w, h);
+    return c.toDataURL(mime, quality);
+  };
+  return {
+    thumb: draw(360, 'image/jpeg', 0.74),
+    full: draw(1024, 'image/jpeg', 0.82),
+    ts: Date.now(),
+  };
+}
+
+async function attachUserImage(tileId, srcDataUrl) {
+  const variants = await makeUserImageVariants(srcDataUrl);
+  STATE.userImages[tileId] = variants;
+  saveUserImages();
+  return variants;
+}
+
+function userImageFor(tile) {
+  return STATE.userImages[tile.id] || null;
+}
+
+function tileImageForList(tile) {
+  // Order of precedence: user-attached photo > extracted single render > extracted room render.
+  const u = userImageFor(tile);
+  if (u) return { src: u.thumb, kind: 'user' };
+  if (tile.single?.thumb) return { src: tile.single.thumb, kind: 'render' };
+  if (tile.room?.thumb) return { src: tile.room.thumb, kind: 'render' };
+  return null;
 }
 
 function pushScanHistory({ raw, top, photo }) {
@@ -82,7 +156,15 @@ function pushScanHistory({ raw, top, photo }) {
 
 // ---------- Data load ----------
 async function loadData() {
-  const res = await fetch('data/tiles.json');
+  // Always try network first, then fall back to whatever the SW cached. Without
+  // no-store, the browser's HTTP cache may serve a tiles.json from before the
+  // last extract/scrape ran, even when the SW cache is fresh.
+  let res;
+  try {
+    res = await fetch('data/tiles.json', { cache: 'no-store' });
+  } catch {
+    res = await fetch('data/tiles.json');
+  }
   if (!res.ok) throw new Error('数据加载失败');
   const data = await res.json();
   STATE.all = Array.isArray(data?.tiles) ? data.tiles : [];
@@ -148,17 +230,18 @@ function cardHtml(t) {
   const brand = escapeHtml(t.brand);
   const cat = escapeHtml(t.category_short);
   const picked = STATE.picked.has(t.id);
-  const imgInner = t.single?.thumb
-    ? `<img src="${escapeHtml(t.single.thumb)}" alt="${escapeHtml(t.sku)}" loading="lazy" decoding="async" />`
-    : t.room?.thumb
-      ? `<img src="${escapeHtml(t.room.thumb)}" alt="${escapeHtml(t.sku)}" loading="lazy" decoding="async" />`
-      : '';
+  const img = tileImageForList(t);
+  const imgInner = img
+    ? `<img src="${escapeHtml(img.src)}" alt="${escapeHtml(t.sku)}" loading="lazy" decoding="async" />`
+    : '';
   const placeholder = imgInner ? '' : 'placeholder';
+  const userBadge = img?.kind === 'user' ? '<span class="user-photo-tag" aria-label="你拍的">📷</span>' : '';
   const pickMark = picked ? '<span class="pick-mark" aria-label="已选">✓</span>' : '';
   return `
     <button class="card" data-id="${t.id}">
       <div class="img-wrap ${placeholder}">
         <span class="brand-tag">${brand}</span>
+        ${userBadge}
         ${pickMark}
         ${imgInner}
       </div>
@@ -197,14 +280,16 @@ function openDetail(id) {
   if (!t) return;
   const picked = STATE.picked.has(t.id);
   const skuEnc = encodeURIComponent(t.sku);
+  const userImg = userImageFor(t);
   const imgs = [];
-  if (t.single?.full) imgs.push({ src: t.single.full, label: '单片效果图' });
+  if (userImg?.full) imgs.push({ src: userImg.full, label: '你拍的 📷', kind: 'user' });
+  if (t.single?.full) imgs.push({ src: t.single.full, label: t.single.source === 'bing-jd' ? '电商图 (JD)' : '单片效果图' });
   if (t.room?.full) imgs.push({ src: t.room.full, label: '实铺效果图' });
   const imgsHtml = imgs.length
     ? '<div class="imgs">' + imgs.map(i =>
-        `<figure><img src="${escapeHtml(i.src)}" alt="${escapeHtml(t.sku)} ${i.label}" /><figcaption>${i.label}</figcaption></figure>`
+        `<figure class="${i.kind === 'user' ? 'user-photo' : ''}"><img src="${escapeHtml(i.src)}" alt="${escapeHtml(t.sku)} ${i.label}" /><figcaption>${i.label}</figcaption></figure>`
       ).join('') + '</div>'
-    : '<div class="imgs"><figure><figcaption style="padding:20px;text-align:center;">此型号无内嵌图，可点下方按钮去淘宝/京东搜</figcaption></figure></div>';
+    : '<div class="imgs"><figure><figcaption style="padding:20px;text-align:center;">此型号无内嵌图。下面"📷 拍一张"会把你的照片设为此型号封面，下次浏览就能看见。</figcaption></figure></div>';
 
   detailBody.innerHTML = `
     ${imgsHtml}
@@ -214,6 +299,8 @@ function openDetail(id) {
     <div class="actions">
       <button class="primary ${picked ? 'picked' : ''}" data-pick="${t.id}">${picked ? '✓ 已加到我的清单' : '加到我的清单'}</button>
       <button data-copy="${escapeHtml(t.sku)}">复制型号</button>
+      <button data-camera="${t.id}">📷 拍一张设为封面</button>
+      ${userImg ? `<button data-remove-photo="${t.id}" class="danger">删除我的照片</button>` : ''}
       <a href="https://s.taobao.com/search?q=${skuEnc}" target="_blank" rel="noopener">淘宝搜</a>
       <a href="https://search.jd.com/Search?keyword=${skuEnc}" target="_blank" rel="noopener">京东搜</a>
     </div>
@@ -325,6 +412,7 @@ async function recognizePhoto(file) {
     return;
   }
 
+  STATE.lastOcrPhoto = dataUrl;
   openRecog(`
     <img src="${dataUrl}" class="photo" alt="待识别照片" />
     <div class="spinner">识别中… (可能需要 3-10 秒)</div>
@@ -412,22 +500,30 @@ async function recognizePhoto(file) {
 }
 
 function renderPrimaryCandidate({ tile, kind, similarity }) {
-  const thumb = tile.single?.thumb || tile.room?.thumb;
-  const img = thumb
-    ? `<img src="${escapeHtml(thumb)}" alt="${escapeHtml(tile.sku)}" />`
+  const userImg = userImageFor(tile);
+  const displayThumb = userImg?.thumb || tile.single?.thumb || tile.room?.thumb;
+  const img = displayThumb
+    ? `<img src="${escapeHtml(displayThumb)}" alt="${escapeHtml(tile.sku)}" />`
     : `<div class="ph-big">无图</div>`;
   const picked = STATE.picked.has(tile.id);
   const pct = Math.round(similarity * 100);
+  // Offer "set this photo as cover" by default; auto-set when there's no image at all.
+  const setCoverBtn = userImg
+    ? `<button class="primary-action" data-replace-cover="${tile.id}">📷 替换我的照片</button>`
+    : `<button class="primary-action ${tile.single?.thumb ? '' : 'primary'}" data-set-cover="${tile.id}">${tile.single?.thumb ? '📷 用这张换封面' : '📷 把这张设为封面'}</button>`;
   return `
     <div class="primary-candidate" data-id="${tile.id}">
       ${img}
       <div class="primary-meta">
         <div class="primary-sku">${escapeHtml(tile.sku)}</div>
         <div class="primary-sub">${escapeHtml(tile.brand)} · ${escapeHtml(tile.spec || '—')} · ${escapeHtml(tile.category_short || '')}</div>
-        <div class="primary-conf">匹配度 ${pct}%${kind === 'exact' ? ' · 精确' : ''}</div>
+        <div class="primary-conf">匹配度 ${pct}%${kind === 'exact' ? ' · 精确' : ''}${userImg ? ' · 已有你的照片' : ''}</div>
         <div class="primary-actions">
           <button class="primary-action" data-open="${tile.id}">查看详情</button>
           <button class="primary-action ${picked ? 'picked' : 'primary'}" data-pick="${tile.id}">${picked ? '✓ 已选' : '加到清单'}</button>
+        </div>
+        <div class="primary-actions">
+          ${setCoverBtn}
         </div>
       </div>
     </div>
@@ -601,9 +697,9 @@ function openPicks() {
     .map(([brand, tiles]) => {
       const rows = tiles.map(t => {
         const note = STATE.notes[t.id] || '';
-        const thumb = t.single?.thumb || t.room?.thumb;
-        const imgHtml = thumb
-          ? `<img src="${escapeHtml(thumb)}" alt="" />`
+        const img = tileImageForList(t);
+        const imgHtml = img
+          ? `<img src="${escapeHtml(img.src)}" alt="" />`
           : `<div class="ph">无图</div>`;
         return `
           <div class="pick-row" data-id="${t.id}">
@@ -803,6 +899,53 @@ function wire() {
       copyText(text);
       return;
     }
+    const cameraBtn = e.target.closest('[data-camera]');
+    if (cameraBtn) {
+      const id = Number(cameraBtn.dataset.camera);
+      promptUserPhoto(id);
+      return;
+    }
+    const removePhotoBtn = e.target.closest('[data-remove-photo]');
+    if (removePhotoBtn) {
+      const id = Number(removePhotoBtn.dataset.removePhoto);
+      delete STATE.userImages[id];
+      saveUserImages();
+      detailDlg.close();
+      openDetail(id);
+      applyFilters();
+      toast('已删除你的照片');
+      return;
+    }
+  });
+
+  // Hidden file input for "set as cover" capture
+  const userPhotoInput = document.createElement('input');
+  userPhotoInput.type = 'file';
+  userPhotoInput.accept = 'image/*';
+  userPhotoInput.capture = 'environment';
+  userPhotoInput.style.display = 'none';
+  document.body.appendChild(userPhotoInput);
+  let pendingUserPhotoTileId = null;
+  function promptUserPhoto(tileId) {
+    pendingUserPhotoTileId = tileId;
+    userPhotoInput.value = '';
+    userPhotoInput.click();
+  }
+  userPhotoInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || pendingUserPhotoTileId == null) return;
+    const id = pendingUserPhotoTileId;
+    pendingUserPhotoTileId = null;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      await attachUserImage(id, dataUrl);
+      toast('已设为此型号封面');
+      detailDlg.close();
+      openDetail(id);
+      applyFilters();
+    } catch (err) {
+      toast('保存失败: ' + (err.message || err));
+    }
   });
 
   // Recog candidate click (secondary candidates use .candidate; primary uses [data-open])
@@ -887,7 +1030,7 @@ function wire() {
   });
 
   // Recog dialog primary actions
-  recogBody.addEventListener('click', (e) => {
+  recogBody.addEventListener('click', async (e) => {
     const openBtn = e.target.closest('[data-open]');
     if (openBtn) {
       recogDlg.close();
@@ -897,8 +1040,6 @@ function wire() {
     const pickBtn = e.target.closest('[data-pick]');
     if (pickBtn) {
       togglePick(Number(pickBtn.dataset.pick));
-      // Re-render the recog dialog with updated pick state (simple: reload from cached candidates)
-      // Easiest: just toast feedback; user can close manually.
       const btn = pickBtn;
       if (STATE.picked.has(Number(pickBtn.dataset.pick))) {
         btn.textContent = '✓ 已选';
@@ -908,6 +1049,22 @@ function wire() {
         btn.textContent = '加到清单';
         btn.classList.add('primary');
         btn.classList.remove('picked');
+      }
+      return;
+    }
+    const setCoverBtn = e.target.closest('[data-set-cover], [data-replace-cover]');
+    if (setCoverBtn) {
+      const id = Number(setCoverBtn.dataset.setCover || setCoverBtn.dataset.replaceCover);
+      if (!STATE.lastOcrPhoto) { toast('没有可用照片'); return; }
+      setCoverBtn.disabled = true;
+      setCoverBtn.textContent = '保存中…';
+      try {
+        await attachUserImage(id, STATE.lastOcrPhoto);
+        setCoverBtn.textContent = '✓ 已设为封面';
+        applyFilters();  // re-render list with new cover
+      } catch (err) {
+        setCoverBtn.disabled = false;
+        toast('保存失败: ' + (err.message || err));
       }
       return;
     }
