@@ -18,3 +18,8 @@ Thumbs.db
 
 # Claude Code local config (preview launch settings, etc)
 .claude/
+
+# Scraper working state (queue, progress files, partial downloads)
+tmp_scrape/
+scrape_progress.json
+scrape_log.txt

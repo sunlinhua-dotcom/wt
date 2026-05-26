@@ -15,7 +15,14 @@
 <header class="topbar">
   <div class="topbar-row">
     <h1>瓷砖速查</h1>
-    <button id="btn-settings" class="icon-btn" aria-label="设置">⚙</button>
+    <div class="topbar-actions">
+      <button id="btn-history" class="icon-btn" aria-label="扫描历史" title="扫描历史">🕒</button>
+      <button id="btn-picks" class="icon-btn" aria-label="我的清单" title="我的清单">
+        <span aria-hidden="true">📋</span>
+        <span id="picks-count-badge" class="picks-count-badge" hidden>0</span>
+      </button>
+      <button id="btn-settings" class="icon-btn" aria-label="设置" title="设置">⚙</button>
+    </div>
   </div>
   <div class="search-row">
     <input id="search" type="search" inputmode="search" autocomplete="off"
@@ -63,6 +70,16 @@
   <div id="recog-body"></div>
 </dialog>
 
+<dialog id="picks-dialog" class="picks">
+  <button class="close" data-close aria-label="关闭">✕</button>
+  <div id="picks-body"></div>
+</dialog>
+
+<dialog id="history-dialog" class="history">
+  <button class="close" data-close aria-label="关闭">✕</button>
+  <div id="history-body"></div>
+</dialog>
+
 <dialog id="settings-dialog" class="settings">
   <button class="close" data-close aria-label="关闭">✕</button>
   <h2>设置</h2>
@@ -84,5 +101,12 @@
 </dialog>
 
 <script src="app.js" defer></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* offline mode optional */ });
+    });
+  }
+</script>
 </body>
 </html>

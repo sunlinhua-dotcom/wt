@@ -16,13 +16,19 @@ const STATE = {
   onlyImages: false,
   onlyPicked: false,
   picked: new Set(),  // tile ids
+  notes: {},          // tile id -> string
+  history: [],        // [{ts, raw, top_id, top_sku, in_lib, photo}]
   settings: { base: 'https://token-plan-cn.xiaomimimo.com/v1', model: 'mimo-v2-omni', key: '' },
 };
 
 const LS = {
   PICKED: 'wt.picked.v1',
   SETTINGS: 'wt.settings.v1',
+  HISTORY: 'wt.history.v1',
+  NOTES: 'wt.notes.v1',
 };
+
+const HISTORY_CAP = 20;
 
 // ---------- Persistence ----------
 function loadPersisted() {
@@ -34,6 +40,14 @@ function loadPersisted() {
     const s = JSON.parse(localStorage.getItem(LS.SETTINGS) || '{}');
     Object.assign(STATE.settings, s);
   } catch { /* ignore */ }
+  try {
+    const h = JSON.parse(localStorage.getItem(LS.HISTORY) || '[]');
+    STATE.history = Array.isArray(h) ? h.slice(0, HISTORY_CAP) : [];
+  } catch { /* ignore */ }
+  try {
+    const n = JSON.parse(localStorage.getItem(LS.NOTES) || '{}');
+    STATE.notes = (n && typeof n === 'object') ? n : {};
+  } catch { /* ignore */ }
 }
 
 function savePicked() {
@@ -41,6 +55,29 @@ function savePicked() {
 }
 function saveSettings() {
   localStorage.setItem(LS.SETTINGS, JSON.stringify(STATE.settings));
+}
+function saveHistory() {
+  localStorage.setItem(LS.HISTORY, JSON.stringify(STATE.history.slice(0, HISTORY_CAP)));
+}
+function saveNotes() {
+  localStorage.setItem(LS.NOTES, JSON.stringify(STATE.notes));
+}
+
+function pushScanHistory({ raw, top, photo }) {
+  // Photo dataUrls can be 200KB+ — strip them from history; we keep only the
+  // raw OCR text and top candidate ref so the list is searchable later.
+  const entry = {
+    ts: Date.now(),
+    raw: String(raw || '').slice(0, 200),
+    top_id: top?.tile?.id || null,
+    top_sku: top?.tile?.sku || null,
+    top_brand: top?.tile?.brand || null,
+    kind: top?.kind || 'none',
+    similarity: top?.similarity || 0,
+  };
+  STATE.history.unshift(entry);
+  STATE.history = STATE.history.slice(0, HISTORY_CAP);
+  saveHistory();
 }
 
 // ---------- Data load ----------
@@ -309,41 +346,107 @@ async function recognizePhoto(file) {
   if (ctrl.signal.aborted) return;
 
   const candidates = matchSkuCandidates(raw);
-  let candHtml = '';
-  if (candidates.length === 0) {
-    // Clamp raw text → first alphanumeric blob, fall back to first 40 chars,
-    // so external search URLs are never broken by line breaks / huge OCR replies.
-    const firstToken = (raw.toUpperCase().match(/[A-Z0-9]{3,}/) || [raw.slice(0, 40)])[0];
-    const q = encodeURIComponent(firstToken);
-    candHtml = `<div class="empty-result">表中未找到匹配。识别码: <b>${escapeHtml(firstToken)}</b></div>
-      <div class="external">
-        <a href="https://s.taobao.com/search?q=${q}" target="_blank" rel="noopener">淘宝搜</a>
-        <a href="https://search.jd.com/Search?keyword=${q}" target="_blank" rel="noopener">京东搜</a>
-      </div>`;
+  const top = candidates[0];
+  const rest = candidates.slice(1);
+  const detectedToken = (raw.toUpperCase().match(/[A-Z0-9]{3,}/) || [raw.slice(0, 40)])[0] || raw.slice(0, 40);
+
+  // Persist to scan history
+  pushScanHistory({ raw, top, photo: dataUrl });
+
+  let bannerClass, bannerIcon, bannerText, bannerSub;
+  if (top?.kind === 'exact') {
+    bannerClass = 'banner-yes';
+    bannerIcon = '✓';
+    bannerText = '在表里';
+    bannerSub = '京东直装这一款有。';
+  } else if (top?.kind === 'near') {
+    bannerClass = 'banner-maybe';
+    bannerIcon = '?';
+    bannerText = '可能是';
+    bannerSub = '编码差几位，注意核对完整 SKU。';
+  } else if (top) {
+    bannerClass = 'banner-maybe';
+    bannerIcon = '?';
+    bannerText = '相近型号';
+    bannerSub = '没找到精确匹配，下面是接近的。';
   } else {
-    candHtml = candidates.map(({ tile, kind }) => {
-      const thumb = tile.single?.thumb || tile.room?.thumb;
-      const imgHtml = thumb
-        ? `<img src="${escapeHtml(thumb)}" alt="" />`
-        : `<div class="ph">无图</div>`;
-      const badgeClass = kind === 'exact' ? 'exact' : 'fuzzy';
-      const badgeText = kind === 'exact' ? '精确' : '近似';
-      return `<button class="candidate" data-id="${tile.id}">
-        ${imgHtml}
-        <div class="candidate-meta">
-          <div class="sku">${escapeHtml(tile.sku)}<span class="match-badge ${badgeClass}">${badgeText}</span></div>
-          <div class="sub">${escapeHtml(tile.brand)} · ${escapeHtml(tile.spec || '—')} · ${escapeHtml(tile.category_short || '')}</div>
-        </div>
-      </button>`;
-    }).join('');
+    bannerClass = 'banner-no';
+    bannerIcon = '✗';
+    bannerText = '不在你的选单里';
+    bannerSub = '这款 JD 直装没收录。可去淘宝/京东自查。';
   }
 
+  const primaryHtml = top
+    ? renderPrimaryCandidate(top)
+    : `<div class="no-match-actions">
+         <div class="detected">识别到的编码：<b>${escapeHtml(detectedToken)}</b></div>
+         <div class="external">
+           <a href="https://s.taobao.com/search?q=${encodeURIComponent(detectedToken)}" target="_blank" rel="noopener">淘宝搜</a>
+           <a href="https://search.jd.com/Search?keyword=${encodeURIComponent(detectedToken)}" target="_blank" rel="noopener">京东搜</a>
+         </div>
+       </div>`;
+
+  const restHtml = rest.length
+    ? `<details class="more-candidates">
+         <summary>其他 ${rest.length} 个相近型号</summary>
+         ${rest.map(c => renderSecondaryCandidate(c)).join('')}
+       </details>`
+    : '';
+
   openRecog(`
-    <img src="${dataUrl}" class="photo" alt="" />
-    <h2>识别结果</h2>
-    <div class="raw">${escapeHtml(raw)}</div>
-    ${candHtml}
+    <div class="recog-banner ${bannerClass}">
+      <div class="banner-icon">${bannerIcon}</div>
+      <div class="banner-text">
+        <div class="banner-title">${bannerText}</div>
+        <div class="banner-sub">${bannerSub}</div>
+      </div>
+    </div>
+    ${primaryHtml}
+    ${restHtml}
+    <details class="raw-details">
+      <summary>识别原文 / 拍的照片</summary>
+      <img src="${dataUrl}" class="photo" alt="" />
+      <div class="raw">${escapeHtml(raw)}</div>
+    </details>
   `);
+}
+
+function renderPrimaryCandidate({ tile, kind, similarity }) {
+  const thumb = tile.single?.thumb || tile.room?.thumb;
+  const img = thumb
+    ? `<img src="${escapeHtml(thumb)}" alt="${escapeHtml(tile.sku)}" />`
+    : `<div class="ph-big">无图</div>`;
+  const picked = STATE.picked.has(tile.id);
+  const pct = Math.round(similarity * 100);
+  return `
+    <div class="primary-candidate" data-id="${tile.id}">
+      ${img}
+      <div class="primary-meta">
+        <div class="primary-sku">${escapeHtml(tile.sku)}</div>
+        <div class="primary-sub">${escapeHtml(tile.brand)} · ${escapeHtml(tile.spec || '—')} · ${escapeHtml(tile.category_short || '')}</div>
+        <div class="primary-conf">匹配度 ${pct}%${kind === 'exact' ? ' · 精确' : ''}</div>
+        <div class="primary-actions">
+          <button class="primary-action" data-open="${tile.id}">查看详情</button>
+          <button class="primary-action ${picked ? 'picked' : 'primary'}" data-pick="${tile.id}">${picked ? '✓ 已选' : '加到清单'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSecondaryCandidate({ tile, kind, similarity }) {
+  const thumb = tile.single?.thumb || tile.room?.thumb;
+  const imgHtml = thumb ? `<img src="${escapeHtml(thumb)}" alt="" />` : `<div class="ph">无图</div>`;
+  const pct = Math.round(similarity * 100);
+  const badge = kind === 'exact' ? '精确' : kind === 'near' ? `接近 ${pct}%` : `相近 ${pct}%`;
+  const badgeClass = kind === 'exact' ? 'exact' : kind === 'near' ? 'near' : 'loose';
+  return `<button class="candidate" data-id="${tile.id}">
+    ${imgHtml}
+    <div class="candidate-meta">
+      <div class="sku">${escapeHtml(tile.sku)}<span class="match-badge ${badgeClass}">${badge}</span></div>
+      <div class="sub">${escapeHtml(tile.brand)} · ${escapeHtml(tile.spec || '—')} · ${escapeHtml(tile.category_short || '')}</div>
+    </div>
+  </button>`;
 }
 
 async function callMimoOCR(dataUrl, signal) {
@@ -389,77 +492,71 @@ function tokenizeSku(s) {
   return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Uint16Array(n + 1);
+  let curr = new Uint16Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    const ac = a.charCodeAt(i - 1);
+    for (let j = 1; j <= n; j++) {
+      const cost = ac === b.charCodeAt(j - 1) ? 0 : 1;
+      const del = prev[j] + 1;
+      const ins = curr[j - 1] + 1;
+      const sub = prev[j - 1] + cost;
+      curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
 function matchSkuCandidates(rawText) {
+  // Returns sorted candidates [{tile, distance, similarity, kind}] where kind is
+  // 'exact' (distance 0), 'near' (similarity ≥ 0.78), or 'loose' (≥ 0.55). Lower
+  // is dropped — caller treats empty as "not in your list".
   if (!rawText || /^NONE$/i.test(rawText.trim())) return [];
-  // Pull alphanumeric blobs of length >= 4 from the raw text.
   const tokens = (rawText.toUpperCase().match(/[A-Z0-9]{4,}/g) || []);
   if (tokens.length === 0) return [];
 
-  const exact = new Map(); // id -> tile
-  const fuzzy = new Map();
-
-  // Pre-index all tiles by canonical SKU
+  const scored = [];
   for (const t of STATE.all) {
     const canon = tokenizeSku(t.sku);
+    if (canon.length < 3) continue;
+    let bestDistance = Infinity;
+    let bestSim = 0;
     for (const tok of tokens) {
-      if (canon === tok) {
-        exact.set(t.id, t);
-      } else if (canon.includes(tok) || tok.includes(canon)) {
-        if (canon.length >= 4 && tok.length >= 4) {
-          // Avoid garbage matches on very short shared substrings
-          const common = Math.min(canon.length, tok.length);
-          const longer = Math.max(canon.length, tok.length);
-          if (common / longer >= 0.6) {
-            fuzzy.set(t.id, t);
-          }
-        }
-      } else {
-        // Levenshtein-ish: substring overlap >= 5 chars
-        if (sharedSubstring(canon, tok) >= 5) {
-          fuzzy.set(t.id, t);
+      const d = levenshtein(canon, tok);
+      const longer = Math.max(canon.length, tok.length);
+      const sim = longer === 0 ? 0 : 1 - d / longer;
+      if (sim > bestSim) { bestSim = sim; bestDistance = d; }
+      // Substring bonus: a contained token shouldn't lose to slightly closer noise.
+      if (canon.includes(tok) || tok.includes(canon)) {
+        const shorter = Math.min(canon.length, tok.length);
+        const containSim = shorter / longer;
+        if (containSim > bestSim) {
+          bestSim = containSim;
+          bestDistance = longer - shorter;
         }
       }
     }
+    if (bestSim < 0.55) continue;
+    let kind;
+    if (bestDistance === 0) kind = 'exact';
+    else if (bestSim >= 0.78) kind = 'near';
+    else kind = 'loose';
+    scored.push({ tile: t, distance: bestDistance, similarity: bestSim, kind });
   }
-  const out = [];
-  for (const t of exact.values()) out.push({ tile: t, kind: 'exact' });
-  for (const t of fuzzy.values()) {
-    if (!exact.has(t.id)) out.push({ tile: t, kind: 'fuzzy' });
-  }
-  // Limit to top 12 results
-  return out.slice(0, 12);
-}
-
-function sharedSubstring(a, b) {
-  // Length of longest common substring (DP, capped for performance).
-  if (!a || !b) return 0;
-  const m = a.length, n = b.length;
-  if (m * n > 4000) {
-    // Fallback: rolling window check for length 5+
-    for (let len = Math.min(m, n); len >= 5; len--) {
-      for (let i = 0; i + len <= m; i++) {
-        if (b.includes(a.substr(i, len))) return len;
-      }
-      break;
-    }
-    return 0;
-  }
-  let best = 0;
-  const dp = new Uint16Array(n + 1);
-  for (let i = 1; i <= m; i++) {
-    let prev = 0;
-    for (let j = 1; j <= n; j++) {
-      const cur = dp[j];
-      if (a[i-1] === b[j-1]) {
-        dp[j] = prev + 1;
-        if (dp[j] > best) best = dp[j];
-      } else {
-        dp[j] = 0;
-      }
-      prev = cur;
-    }
-  }
-  return best;
+  scored.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    if (b.similarity !== a.similarity) return b.similarity - a.similarity;
+    return a.tile.sku.localeCompare(b.tile.sku);
+  });
+  return scored.slice(0, 8);
 }
 
 // ---------- Pick toggle ----------
@@ -467,7 +564,155 @@ function togglePick(id) {
   if (STATE.picked.has(id)) STATE.picked.delete(id);
   else STATE.picked.add(id);
   savePicked();
+  updatePicksBadge();
   applyFilters();
+}
+
+function updatePicksBadge() {
+  const badge = $('#picks-count-badge');
+  if (!badge) return;
+  const n = STATE.picked.size;
+  badge.textContent = n;
+  badge.hidden = n === 0;
+}
+
+// ---------- Picks dialog ----------
+const picksDlg = $('#picks-dialog');
+const picksBody = $('#picks-body');
+
+function openPicks() {
+  const picked = STATE.all.filter(t => STATE.picked.has(t.id));
+  if (picked.length === 0) {
+    picksBody.innerHTML = `
+      <h2>我的清单</h2>
+      <div class="empty-result">还没勾选任何型号。在型号详情页点"加到清单"。</div>
+    `;
+    if (!picksDlg.open) picksDlg.showModal();
+    return;
+  }
+  // Group by brand
+  const groups = new Map();
+  for (const t of picked) {
+    if (!groups.has(t.brand)) groups.set(t.brand, []);
+    groups.get(t.brand).push(t);
+  }
+  const groupsHtml = [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], 'zh'))
+    .map(([brand, tiles]) => {
+      const rows = tiles.map(t => {
+        const note = STATE.notes[t.id] || '';
+        const thumb = t.single?.thumb || t.room?.thumb;
+        const imgHtml = thumb
+          ? `<img src="${escapeHtml(thumb)}" alt="" />`
+          : `<div class="ph">无图</div>`;
+        return `
+          <div class="pick-row" data-id="${t.id}">
+            ${imgHtml}
+            <div class="pick-meta">
+              <div class="pick-sku">${escapeHtml(t.sku)}</div>
+              <div class="pick-sub">${escapeHtml(t.spec || '—')} · ${escapeHtml(t.category_short || '—')}</div>
+              <input class="pick-note" type="text" data-note-id="${t.id}" value="${escapeHtml(note)}" placeholder="给这块砖记一笔（如：客厅地面）" />
+            </div>
+            <div class="pick-actions">
+              <button class="pick-open" data-open="${t.id}">查看</button>
+              <button class="pick-remove" data-pick="${t.id}">移出</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+      return `
+        <div class="pick-group">
+          <div class="pick-group-h">${escapeHtml(brand)} <span class="pick-count">${tiles.length}</span></div>
+          ${rows}
+        </div>
+      `;
+    }).join('');
+  picksBody.innerHTML = `
+    <h2>我的清单 <span class="muted small">${picked.length} 个</span></h2>
+    <div class="picks-actions">
+      <button id="btn-copy-picks" class="primary">复制清单</button>
+      <button id="btn-share-picks" class="ghost">分享…</button>
+    </div>
+    ${groupsHtml}
+  `;
+  if (!picksDlg.open) picksDlg.showModal();
+}
+
+function picksAsText() {
+  const picked = STATE.all.filter(t => STATE.picked.has(t.id));
+  if (picked.length === 0) return '';
+  const groups = new Map();
+  for (const t of picked) {
+    if (!groups.has(t.brand)) groups.set(t.brand, []);
+    groups.get(t.brand).push(t);
+  }
+  const lines = ['【瓷砖选单】共 ' + picked.length + ' 款', ''];
+  for (const [brand, tiles] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh'))) {
+    lines.push(`▎${brand}`);
+    for (const t of tiles) {
+      const note = STATE.notes[t.id];
+      lines.push(`  ${t.sku}  ${t.spec || ''}  ${t.category_short || ''}${note ? '  // ' + note : ''}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trim();
+}
+
+// ---------- History dialog ----------
+const historyDlg = $('#history-dialog');
+const historyBody = $('#history-body');
+
+function openHistory() {
+  if (STATE.history.length === 0) {
+    historyBody.innerHTML = `
+      <h2>扫描历史</h2>
+      <div class="empty-result">还没扫过任何瓷砖。点右下角相机按钮开始。</div>
+    `;
+    if (!historyDlg.open) historyDlg.showModal();
+    return;
+  }
+  const rows = STATE.history.map((h, i) => {
+    const t = h.top_id ? STATE.all.find(x => x.id === h.top_id) : null;
+    const thumb = t?.single?.thumb || t?.room?.thumb;
+    const imgHtml = thumb
+      ? `<img src="${escapeHtml(thumb)}" alt="" />`
+      : `<div class="ph">${h.kind === 'none' ? '✗' : '?'}</div>`;
+    const ago = relativeTime(h.ts);
+    const badge = h.kind === 'exact' ? '<span class="match-badge exact">在表里</span>'
+      : h.kind === 'near' ? `<span class="match-badge near">可能是 ${Math.round(h.similarity * 100)}%</span>`
+      : h.kind === 'loose' ? `<span class="match-badge loose">相近 ${Math.round(h.similarity * 100)}%</span>`
+      : '<span class="match-badge no">不在表里</span>';
+    const sku = h.top_sku ? escapeHtml(h.top_sku) : `<span class="muted">${escapeHtml(h.raw || '(空)')}</span>`;
+    return `
+      <button class="history-row" data-id="${h.top_id || ''}" data-history-idx="${i}">
+        ${imgHtml}
+        <div class="hist-meta">
+          <div class="hist-sku">${sku} ${badge}</div>
+          <div class="hist-sub">${h.top_brand ? escapeHtml(h.top_brand) + ' · ' : ''}${ago}</div>
+        </div>
+      </button>
+    `;
+  }).join('');
+  historyBody.innerHTML = `
+    <h2>扫描历史 <span class="muted small">最近 ${STATE.history.length} 条</span></h2>
+    <div class="picks-actions">
+      <button id="btn-clear-history" class="ghost">清空历史</button>
+    </div>
+    ${rows}
+  `;
+  if (!historyDlg.open) historyDlg.showModal();
+}
+
+function relativeTime(ts) {
+  const delta = Math.max(0, Date.now() - ts);
+  const m = Math.floor(delta / 60000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return m + ' 分钟前';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' 小时前';
+  const d = Math.floor(h / 24);
+  if (d < 30) return d + ' 天前';
+  return new Date(ts).toLocaleDateString('zh-CN');
 }
 
 // ---------- UI wiring ----------
@@ -560,7 +805,7 @@ function wire() {
     }
   });
 
-  // Recog candidate click
+  // Recog candidate click (secondary candidates use .candidate; primary uses [data-open])
   recogBody.addEventListener('click', (e) => {
     const cand = e.target.closest('.candidate');
     if (!cand) return;
@@ -585,8 +830,88 @@ function wire() {
     await recognizePhoto(file);
   });
 
-  // Settings
+  // Settings / picks / history
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-picks').addEventListener('click', openPicks);
+  $('#btn-history').addEventListener('click', openHistory);
+
+  // Picks dialog event delegation
+  picksBody.addEventListener('click', (e) => {
+    const open = e.target.closest('[data-open]');
+    if (open) { picksDlg.close(); openDetail(Number(open.dataset.open)); return; }
+    const pick = e.target.closest('[data-pick]');
+    if (pick) {
+      togglePick(Number(pick.dataset.pick));
+      openPicks(); // re-render
+      return;
+    }
+    if (e.target.id === 'btn-copy-picks') {
+      const text = picksAsText();
+      if (text) copyText(text); else toast('清单为空');
+      return;
+    }
+    if (e.target.id === 'btn-share-picks') {
+      const text = picksAsText();
+      if (!text) { toast('清单为空'); return; }
+      if (navigator.share) {
+        navigator.share({ title: '瓷砖选单', text }).catch(() => {});
+      } else {
+        copyText(text);
+      }
+      return;
+    }
+  });
+  picksBody.addEventListener('input', (e) => {
+    const noteInput = e.target.closest('[data-note-id]');
+    if (!noteInput) return;
+    const id = Number(noteInput.dataset.noteId);
+    const val = noteInput.value.trim();
+    if (val) STATE.notes[id] = val;
+    else delete STATE.notes[id];
+    saveNotes();
+  });
+
+  // History dialog event delegation
+  historyBody.addEventListener('click', (e) => {
+    if (e.target.id === 'btn-clear-history') {
+      if (!confirm('清空扫描历史？')) return;
+      STATE.history = [];
+      saveHistory();
+      openHistory();
+      return;
+    }
+    const row = e.target.closest('.history-row');
+    if (!row) return;
+    const id = Number(row.dataset.id);
+    if (id) { historyDlg.close(); openDetail(id); }
+  });
+
+  // Recog dialog primary actions
+  recogBody.addEventListener('click', (e) => {
+    const openBtn = e.target.closest('[data-open]');
+    if (openBtn) {
+      recogDlg.close();
+      openDetail(Number(openBtn.dataset.open));
+      return;
+    }
+    const pickBtn = e.target.closest('[data-pick]');
+    if (pickBtn) {
+      togglePick(Number(pickBtn.dataset.pick));
+      // Re-render the recog dialog with updated pick state (simple: reload from cached candidates)
+      // Easiest: just toast feedback; user can close manually.
+      const btn = pickBtn;
+      if (STATE.picked.has(Number(pickBtn.dataset.pick))) {
+        btn.textContent = '✓ 已选';
+        btn.classList.remove('primary');
+        btn.classList.add('picked');
+      } else {
+        btn.textContent = '加到清单';
+        btn.classList.add('primary');
+        btn.classList.remove('picked');
+      }
+      return;
+    }
+  });
 
   // Infinite scroll via IntersectionObserver
   const sentinel = $('#sentinel');
@@ -648,6 +973,7 @@ function consumeUrlHashConfig() {
 async function boot() {
   loadPersisted();
   consumeUrlHashConfig();
+  updatePicksBadge();
   try {
     const data = await loadData();
     buildBrandTabs(data.brand_counts);
